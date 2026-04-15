@@ -1,7 +1,21 @@
+import os
+
 BOT_NAME = "yelp_scraper"
 
 SPIDER_MODULES = ["yelp_scraper.spiders"]
 NEWSPIDER_MODULE = "yelp_scraper.spiders"
+
+# ---------------------------------------------------------------------------
+# Zyte API key
+# Override at run-time via:  export ZYTE_API_KEY=<your-key>
+# ---------------------------------------------------------------------------
+ZYTE_API_KEY = os.environ.get("ZYTE_API_KEY", "d5ade7ca66f54281b9788b32c08900c9")
+
+_ZYTE_PROXY = {
+    "server": "http://proxy.zyte.com:8011",
+    "username": ZYTE_API_KEY,
+    "password": "",
+}
 
 # ---------------------------------------------------------------------------
 # Playwright download handlers – required for JS rendering
@@ -15,8 +29,11 @@ DOWNLOAD_HANDLERS = {
 TWISTED_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
 
 PLAYWRIGHT_BROWSER_TYPE = "chromium"
+
+# Launch options: headless Chromium routed through Zyte proxy
 PLAYWRIGHT_LAUNCH_OPTIONS = {
     "headless": True,
+    "proxy": _ZYTE_PROXY,          # all browser-level HTTP/S goes via Zyte
     "args": [
         "--no-sandbox",
         "--disable-setuid-sandbox",
@@ -24,6 +41,14 @@ PLAYWRIGHT_LAUNCH_OPTIONS = {
         "--disable-gpu",
     ],
 }
+
+# Browser context: ignore TLS errors caused by Zyte's SSL inspection
+PLAYWRIGHT_CONTEXTS = {
+    "default": {
+        "ignore_https_errors": True,
+    }
+}
+
 PLAYWRIGHT_DEFAULT_NAVIGATION_TIMEOUT = 60_000  # ms
 
 # ---------------------------------------------------------------------------
@@ -43,17 +68,18 @@ DEFAULT_REQUEST_HEADERS = {
 
 # ---------------------------------------------------------------------------
 # Crawl politeness
+# (Zyte rotates IPs, so we can afford slightly higher concurrency)
 # ---------------------------------------------------------------------------
 ROBOTSTXT_OBEY = False          # Yelp disallows scrapers; skip for coursework
-CONCURRENT_REQUESTS = 2
-CONCURRENT_REQUESTS_PER_DOMAIN = 1
-DOWNLOAD_DELAY = 3              # base delay between requests (seconds)
+CONCURRENT_REQUESTS = 4
+CONCURRENT_REQUESTS_PER_DOMAIN = 2
+DOWNLOAD_DELAY = 2              # base delay between requests (seconds)
 RANDOMIZE_DOWNLOAD_DELAY = True
 
 AUTOTHROTTLE_ENABLED = True
-AUTOTHROTTLE_START_DELAY = 3
-AUTOTHROTTLE_MAX_DELAY = 30
-AUTOTHROTTLE_TARGET_CONCURRENCY = 1.0
+AUTOTHROTTLE_START_DELAY = 2
+AUTOTHROTTLE_MAX_DELAY = 20
+AUTOTHROTTLE_TARGET_CONCURRENCY = 2.0
 
 # ---------------------------------------------------------------------------
 # Retry / error handling
@@ -87,26 +113,3 @@ FEEDS = {
 }
 
 FEED_EXPORT_ENCODING = "utf-8"
-
-# ---------------------------------------------------------------------------
-# Optional: Zyte Smart Proxy (uncomment and fill in your API key if blocked)
-# ---------------------------------------------------------------------------
-# pip install scrapy-zyte-smartproxy
-#
-# ZYTE_SMARTPROXY_ENABLED = True
-# ZYTE_SMARTPROXY_APIKEY = "YOUR_ZYTE_API_KEY"
-# DOWNLOADER_MIDDLEWARES = {
-#     "scrapy_zyte_smartproxy.ZyteSmartProxyMiddleware": 610,
-# }
-#
-# Or, for Zyte API transparent mode:
-# pip install scrapy-zyte-api
-#
-# ZYTE_API_KEY = "YOUR_ZYTE_API_KEY"
-# ZYTE_API_TRANSPARENT_MODE = True
-# DOWNLOADER_MIDDLEWARES = {
-#     "scrapy_zyte_api.ScrapyZyteAPIDownloaderMiddleware": 1000,
-# }
-# SPIDER_MIDDLEWARES = {
-#     "scrapy_zyte_api.ScrapyZyteAPISpiderMiddleware": 100,
-# }
