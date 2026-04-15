@@ -11,12 +11,31 @@ NEWSPIDER_MODULE = "yelp_scraper.spiders"
 # ---------------------------------------------------------------------------
 ZYTE_API_KEY = os.environ.get("ZYTE_API_KEY", "d5ade7ca66f54281b9788b32c08900c9")
 
+# ---------------------------------------------------------------------------
+# Download handlers
+#
+# Course baseline – standard Playwright (local Chromium, no proxy):
+#
+#   DOWNLOAD_HANDLERS = {
+#       "http": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+#       "https": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+#   }
+#   PLAYWRIGHT_BROWSER_TYPE = "chromium"
+#   PLAYWRIGHT_LAUNCH_OPTIONS = {"headless": True}
+#
+# Active configuration – Zyte API browser rendering:
+# Yelp returns 503 when a local Playwright browser is routed through a raw
+# proxy.  Zyte API's browserHtml option runs a managed browser on Zyte's
+# infrastructure and returns fully-rendered HTML, which Yelp allows.
+# The spider meta uses  "zyte_api": {"browserHtml": True}  instead of the
+# Playwright equivalents; all CSS/XPath parsing is otherwise identical.
+# ---------------------------------------------------------------------------
 DOWNLOAD_HANDLERS = {
     "http": "scrapy_zyte_api.ScrapyZyteAPIDownloadHandler",
     "https": "scrapy_zyte_api.ScrapyZyteAPIDownloadHandler",
 }
 
-# Zyte API requires the asyncio reactor
+# Both Playwright and Zyte API require the asyncio reactor
 TWISTED_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
 
 DOWNLOADER_MIDDLEWARES = {
