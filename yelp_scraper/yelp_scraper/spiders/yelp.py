@@ -63,6 +63,11 @@ def _parse_rating(aria_label: str) -> str:
 class YelpSpider(scrapy.Spider):
     name = "yelp"
 
+    def __init__(self, debug="0", *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._debug = int(debug)
+        self._debug_saved = False
+
     # ------------------------------------------------------------------
     # Start requests – one per listing page (20 pages × 10 results = 200)
     # ------------------------------------------------------------------
@@ -119,6 +124,16 @@ class YelpSpider(scrapy.Spider):
     def parse_restaurant(self, response):
         rd = response.meta["restaurant_data"]
 
+        if self._debug and not self._debug_saved:
+            import os
+            os.makedirs("output", exist_ok=True)
+            slug = re.sub(r"[^\w]", "_", rd.get("name", "restaurant"))[:30]
+            path = f"output/debug_{slug}.html"
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(response.text)
+            self.logger.info(f"[DEBUG] Saved restaurant HTML → {path}")
+            self._debug_saved = True
+
         # --- Try JSON-LD first (fastest, most structured) -------------
         json_ld_reviews = list(self._reviews_from_json_ld(response, rd))
         if json_ld_reviews:
@@ -164,7 +179,13 @@ class YelpSpider(scrapy.Spider):
         cards = []
         seen = set()
 
-        all_biz_anchors = response.css(
+        # Prefer heading-anchored links (most precise — Yelp puts business
+        # names inside <h3>); fall back to any /biz/ anchor if none found.
+        heading_anchors = response.css(
+            'h3 a[href*="/biz/"]:not([href*="writeareview"])'
+            ':not([href*="/photos"])'
+        )
+        all_biz_anchors = heading_anchors or response.css(
             'a[href*="/biz/"]:not([href*="writeareview"])'
             ':not([href*="/photos"])'
             ':not([href*="/menu"])'
@@ -180,8 +201,10 @@ class YelpSpider(scrapy.Spider):
             if not name or len(name) < 3:
                 continue
             skip_words = {
-                "write a review", "order online", "get directions",
-                "claimed", "unclaimed", "see all", "photos",
+                "write a review", "order online", "order now", "order",
+                "get directions", "get quote", "claimed", "unclaimed",
+                "see all", "photos", "menu", "more info", "website",
+                "call", "check in", "share", "add photo", "delivery",
             }
             if name.lower() in skip_words:
                 continue
@@ -285,19 +308,33 @@ class YelpSpider(scrapy.Spider):
             if joined:
                 return joined
 
-        # Priority 2: first <p> or <span> that contains NO /biz/ anchor.
-        # Name links are always inside <a href="/biz/...">, so any paragraph
-        # without a biz link is location/neighborhood text.
+        # Priority 2: first <p> or <span> that looks like a location string.
+        # Reject name containers, category containers, and any text that is
+        # purely numeric/symbolic (ratings, review counts, price ranges).
         skip_labels = {
             "open", "closed", "sponsored", "new", "hot",
             "order online", "get directions", "see more",
+            "open now", "temporarily closed",
         }
         for p in el.css("p, span"):
-            if p.css("a[href*='/biz/']"):   # skip name containers
-                continue
+            if p.css("a[href*='/biz/'], a[href*='find_desc']"):
+                continue                          # skip name + category containers
             joined = " ".join(p.css("::text").getall()).strip()
-            if joined and len(joined) <= 120 and joined.lower() not in skip_labels:
-                return joined
+            if not joined or len(joined) > 120:
+                continue
+            if joined.lower() in skip_labels:
+                continue
+            # Skip pure numbers / rating values / review counts / price symbols
+            if re.fullmatch(r"[\d\s$.,·•\-–—()\$]+", joined):
+                continue
+            if re.search(r"^\d+\.?\d*$", joined):          # e.g. "4.5"
+                continue
+            if re.search(r"[\d.]+\s*star|\breviews?\b|\brated\b", joined, re.IGNORECASE):
+                continue
+            # Must have at least one real alphabetic word (rules out "$$", "4.5", etc.)
+            if not re.search(r"[a-zA-Z]{2,}", joined):
+                continue
+            return joined
 
         return ""
 
@@ -313,6 +350,9 @@ class YelpSpider(scrapy.Spider):
 
             records = data if isinstance(data, list) else [data]
             for record in records:
+                self.logger.debug(
+                    f"JSON-LD @type={record.get('@type')} keys={list(record.keys())}"
+                )
                 biz_type = record.get("@type", "")
                 if biz_type not in (
                     "Restaurant", "FoodEstablishment", "LocalBusiness", "BarOrPub",
@@ -372,40 +412,48 @@ class YelpSpider(scrapy.Spider):
 
         yielded = 0
         for container in candidates:
-            user_links = container.css("a[href*='/user_details']")
-            star_els   = container.css(
-                "[aria-label*='star rating'], [aria-label*='star']"
+            user_links = container.css(
+                "a[href*='/user_details'], a[href*='/users/']"
             )
-            text_els   = container.css("p[lang], p[lang] span")
+            star_els = container.css("[aria-label*='star']")
+            text_els = container.css(
+                "p[lang], p[lang] span, "
+                "[class*='comment'] p, [class*='reviewText'] span, "
+                "[class*='raw'] span, span[lang]"
+            )
 
-            if not (user_links and star_els and text_els):
+            # Require review text + at least one other signal
+            if not text_els:
+                continue
+            if not (user_links or star_els):
                 continue
 
             # --- Reviewer name ---
             # The name is in a sibling <span> of the avatar link, not inside it
             reviewer_name = ""
-            user_link = user_links[0]
-            name_from_sibling = user_link.xpath(
-                "following-sibling::span[1]//text()"
-            ).get("").strip()
-            if name_from_sibling:
-                reviewer_name = name_from_sibling
-            else:
-                # Walk up to shared wrapper, grab first span without
-                # star/rating/date noise
-                wrapper = user_link.xpath("parent::*[1]")
-                for span in wrapper.css("span"):
-                    candidate = " ".join(span.css("::text").getall()).strip()
-                    if candidate and not re.search(
-                        r"star|rating|\d+/\d+|review|photo", candidate, re.IGNORECASE
-                    ):
-                        reviewer_name = candidate
-                        break
-            if not reviewer_name:
-                reviewer_name = (
-                    user_link.attrib.get("aria-label", "").strip()
-                    or user_link.attrib.get("title", "").strip()
-                )
+            if user_links:
+                user_link = user_links[0]
+                name_from_sibling = user_link.xpath(
+                    "following-sibling::span[1]//text()"
+                ).get("").strip()
+                if name_from_sibling:
+                    reviewer_name = name_from_sibling
+                else:
+                    # Walk up to shared wrapper, grab first span without
+                    # star/rating/date noise
+                    wrapper = user_link.xpath("parent::*[1]")
+                    for span in wrapper.css("span"):
+                        candidate = " ".join(span.css("::text").getall()).strip()
+                        if candidate and not re.search(
+                            r"star|rating|\d+/\d+|review|photo", candidate, re.IGNORECASE
+                        ):
+                            reviewer_name = candidate
+                            break
+                if not reviewer_name:
+                    reviewer_name = (
+                        user_link.attrib.get("aria-label", "").strip()
+                        or user_link.attrib.get("title", "").strip()
+                    )
 
             # --- Reviewer rating ---
             aria = star_els.attrib.get("aria-label", "")
