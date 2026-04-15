@@ -1,0 +1,4 @@
+scrapy>=2.11
+scrapy-playwright>=0.0.34
+playwright>=1.40
+itemadapter>=0.7
