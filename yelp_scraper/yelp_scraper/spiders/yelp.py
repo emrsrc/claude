@@ -57,6 +57,22 @@ def _parse_rating(aria_label: str) -> str:
     return m.group(1) if m else ""
 
 
+def _parse_count(raw: str) -> str:
+    """Normalise a review-count string to a plain integer string.
+
+    Handles: '1,234'  →  '1234'
+             '1.2k'   →  '1200'
+             '2K'     →  '2000'
+    """
+    val = raw.strip().replace(",", "")
+    if val.lower().endswith("k"):
+        try:
+            return str(int(float(val[:-1]) * 1000))
+        except ValueError:
+            pass
+    return val
+
+
 # ---------------------------------------------------------------------------
 # Spider
 # ---------------------------------------------------------------------------
@@ -138,6 +154,12 @@ class YelpSpider(scrapy.Spider):
         json_ld_reviews = list(self._reviews_from_json_ld(response, rd))
         if json_ld_reviews:
             yield from json_ld_reviews
+            return
+
+        # --- Try embedded page-state JSON (Yelp buries reviews here) -
+        page_data_reviews = list(self._reviews_from_page_data(response, rd))
+        if page_data_reviews:
+            yield from page_data_reviews
             return
 
         # --- Fall back to HTML parsing --------------------------------
@@ -261,19 +283,21 @@ class YelpSpider(scrapy.Spider):
         return ""
 
     def _extract_review_count(self, el) -> str:
-        # Case 1: digit + "review" in the same text node
+        # Case 1: count + "review" in the same text node.
+        # Handles plain numbers (1,234), decimal-k (1.2k), and integer-k (2K).
         for text in el.css("::text").getall():
-            m = re.search(r"([\d,]+)\s*review", text, re.IGNORECASE)
+            m = re.search(
+                r"([\d,]+(?:\.\d+)?k?)\s+review", text, re.IGNORECASE
+            )
             if m:
-                return m.group(1).replace(",", "")
-        # Case 2: Yelp sometimes splits the count and the word "reviews"
-        # across adjacent sibling text nodes
+                return _parse_count(m.group(1))
+        # Case 2: Yelp sometimes splits the count and "reviews" across siblings
         all_texts = [t.strip() for t in el.css("::text").getall() if t.strip()]
         for i, text in enumerate(all_texts):
-            if re.fullmatch(r"[\d,]+", text):
+            if re.fullmatch(r"[\d,]+(?:\.\d+)?k?", text, re.IGNORECASE):
                 neighbors = all_texts[max(0, i - 1):i] + all_texts[i + 1:i + 2]
                 if any("review" in n.lower() for n in neighbors):
-                    return text.replace(",", "")
+                    return _parse_count(text)
         return ""
 
     def _extract_categories(self, el) -> str:
@@ -393,6 +417,124 @@ class YelpSpider(scrapy.Spider):
         return item
 
     # ------------------------------------------------------------------
+    # Review extraction from embedded page-state JSON
+    # ------------------------------------------------------------------
+    def _reviews_from_page_data(self, response, rd):
+        """
+        Yelp buries the full page state inside inline <script> tags as a
+        large JSON blob.  We scan every inline script that contains the
+        word "reviewBody" or "reviewText" and walk the JSON tree looking
+        for objects that have both a text field and a rating field.
+
+        Also handles Next.js __NEXT_DATA__ and plain
+        application/json script tags.
+        """
+        # Priority: typed JSON script tags (Next.js / serialised props)
+        for raw in response.css(
+            'script#__NEXT_DATA__::text, '
+            'script[type="application/json"]::text'
+        ).getall():
+            try:
+                data = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            items = list(self._walk_json_reviews(data, rd))
+            if items:
+                self.logger.debug(
+                    f"[page_data] found {len(items)} reviews in typed JSON script"
+                )
+                yield from items
+                return
+
+        # Fallback: any inline script with review-related keywords
+        for raw in response.css("script:not([src])::text").getall():
+            if not re.search(r'"reviewBody"|"reviewText"|"review_text"', raw):
+                continue
+            # Strip a leading JS assignment wrapper, e.g. window.__data={...};
+            json_str = re.sub(r"^[^{\[]*", "", raw.strip())
+            json_str = re.sub(r"\s*;?\s*$", "", json_str)
+            try:
+                data = json.loads(json_str)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            items = list(self._walk_json_reviews(data, rd))
+            if items:
+                self.logger.debug(
+                    f"[page_data] found {len(items)} reviews in inline script"
+                )
+                yield from items
+                return
+
+    def _walk_json_reviews(self, node, rd, _depth=0, _seen=None):
+        """
+        Recursively walk a JSON tree.  Yield ReviewItems for any dict that
+        contains both a review-text field and a rating/star field.
+        Capped at depth 12 and 30 review items to avoid runaway traversal.
+        """
+        if _seen is None:
+            _seen = {"count": 0}
+        if _depth > 12 or _seen["count"] >= 30:
+            return
+
+        if isinstance(node, list):
+            for child in node:
+                yield from self._walk_json_reviews(child, rd, _depth + 1, _seen)
+
+        elif isinstance(node, dict):
+            TEXT_KEYS   = {"reviewBody", "reviewText", "review_text", "text", "comment", "body"}
+            RATING_KEYS = {"rating", "ratingValue", "starRating", "star_rating", "stars"}
+
+            has_text   = TEXT_KEYS   & node.keys()
+            has_rating = RATING_KEYS & node.keys()
+
+            if has_text and has_rating:
+                # Extract text
+                review_text = ""
+                for k in ("reviewBody", "reviewText", "review_text", "text", "comment", "body"):
+                    v = node.get(k)
+                    if isinstance(v, str) and len(v) > 5:
+                        review_text = v[:3000]
+                        break
+
+                # Extract rating
+                reviewer_rating = ""
+                for k in ("ratingValue", "rating", "starRating", "star_rating", "stars"):
+                    v = node.get(k)
+                    if v is not None:
+                        reviewer_rating = str(v)
+                        break
+
+                # Extract author/reviewer name
+                reviewer_name = ""
+                for k in ("author", "user", "reviewer", "userInfo"):
+                    v = node.get(k)
+                    if isinstance(v, dict):
+                        reviewer_name = v.get(
+                            "name", v.get("displayName", v.get("username", ""))
+                        )
+                        break
+                    if isinstance(v, str) and v:
+                        reviewer_name = v
+                        break
+
+                if review_text or reviewer_name:
+                    item = ReviewItem()
+                    item["restaurant_name"]         = rd.get("name", "")
+                    item["restaurant_rating"]       = rd.get("rating", "")
+                    item["restaurant_review_count"] = rd.get("review_count", "")
+                    item["restaurant_link"]         = rd.get("link", "")
+                    item["restaurant_location"]     = rd.get("location", "")
+                    item["restaurant_categories"]   = rd.get("categories", "")
+                    item["reviewer_name"]           = reviewer_name
+                    item["reviewer_rating"]         = reviewer_rating
+                    item["review_text"]             = review_text
+                    _seen["count"] += 1
+                    yield item
+            else:
+                for v in node.values():
+                    yield from self._walk_json_reviews(v, rd, _depth + 1, _seen)
+
+    # ------------------------------------------------------------------
     # Review extraction from rendered HTML
     # ------------------------------------------------------------------
     def _reviews_from_html(self, response, rd):
@@ -407,8 +549,17 @@ class YelpSpider(scrapy.Spider):
         in a sibling <span>, so we use XPath's following-sibling axis.
         """
         candidates = response.css(
-            "li, section, article, [data-review-id], [id^='review_']"
+            "[data-review-id], [id^='review_'], "
+            "li:has(a[href*='/user_details']), "
+            "li:has(a[href*='/users/']), "
+            "section, article"
         )
+        # Also try any div that directly contains a user link (last resort)
+        if not candidates:
+            candidates = response.css(
+                "div:has(> a[href*='/user_details']), "
+                "div:has(> a[href*='/users/'])"
+            )
 
         yielded = 0
         for container in candidates:
@@ -416,11 +567,19 @@ class YelpSpider(scrapy.Spider):
                 "a[href*='/user_details'], a[href*='/users/']"
             )
             star_els = container.css("[aria-label*='star']")
+            # Try progressively looser text selectors
             text_els = container.css(
-                "p[lang], p[lang] span, "
+                "p[lang], span[lang], "
+                "p[lang] span, "
                 "[class*='comment'] p, [class*='reviewText'] span, "
-                "[class*='raw'] span, span[lang]"
+                "[class*='raw'] span, [class*='review'] p"
             )
+            # Last resort: any <p> with substantial text inside the container
+            if not text_els:
+                text_els = [
+                    p for p in container.css("p")
+                    if len(" ".join(p.css("::text").getall()).strip()) > 30
+                ]
 
             # Require review text + at least one other signal
             if not text_els:
@@ -456,12 +615,16 @@ class YelpSpider(scrapy.Spider):
                     )
 
             # --- Reviewer rating ---
-            aria = star_els.attrib.get("aria-label", "")
+            aria = star_els[0].attrib.get("aria-label", "") if star_els else ""
             reviewer_rating = _parse_rating(aria)
 
             # --- Review text ---
-            texts = text_els.css("::text").getall()
-            review_text = " ".join(t.strip() for t in texts if t.strip())
+            # text_els may be a SelectorList or a plain list
+            if hasattr(text_els, "css"):
+                raw_texts = text_els.css("::text").getall()
+            else:
+                raw_texts = [t for el in text_els for t in el.css("::text").getall()]
+            review_text = " ".join(t.strip() for t in raw_texts if t.strip())
             if not review_text:
                 review_text = " ".join(
                     t.strip()
