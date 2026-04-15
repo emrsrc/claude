@@ -52,9 +52,9 @@ SPIDER_MIDDLEWARES = {
 #  to avoid burning through quota too fast)
 # ---------------------------------------------------------------------------
 ROBOTSTXT_OBEY = False
-CONCURRENT_REQUESTS = 4
-CONCURRENT_REQUESTS_PER_DOMAIN = 4
-DOWNLOAD_DELAY = 1
+CONCURRENT_REQUESTS = 2
+CONCURRENT_REQUESTS_PER_DOMAIN = 1
+DOWNLOAD_DELAY = 2
 RANDOMIZE_DOWNLOAD_DELAY = True
 
 AUTOTHROTTLE_ENABLED = True

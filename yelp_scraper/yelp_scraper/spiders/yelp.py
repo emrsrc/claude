@@ -9,9 +9,9 @@ Rendering strategy
 ------------------
 All pages are fetched via the Zyte API with ``browserHtml: true``.  Zyte
 runs a real managed browser on its end, executes the page JavaScript, and
-returns fully-rendered HTML.  Restaurant detail pages additionally use Zyte
-API scroll actions so that the lazy-loaded review section is rendered before
-HTML is captured.
+returns fully-rendered HTML.  Scroll actions were removed from detail page
+requests after they caused 520 website-ban errors — Yelp detects the longer
+browser session as automated activity.
 
 Requires:
     scrapy-zyte-api  (pip install scrapy-zyte-api)
@@ -39,23 +39,12 @@ BASE_URL = (
 TOTAL_PAGES = 20
 RESULTS_PER_PAGE = 10  # Yelp shows 10 results per listing page
 
-# Listing pages: simple browser render, no scroll needed
+# All pages use the same simple browser render.
+# Scroll actions were removed from detail page requests — they triggered
+# Zyte 520 "website-ban" errors because the extended browser session made
+# the request detectable as automated.
 _ZYTE_BROWSER = {
     "browserHtml": True,
-}
-
-# Restaurant detail pages: scroll to trigger lazy-loaded review section
-_ZYTE_BROWSER_WITH_SCROLL = {
-    "browserHtml": True,
-    "actions": [
-        {"action": "waitForTimeout", "timeout": 2000},
-        {"action": "scroll", "selector": {"type": "css", "value": "body"},
-         "x": 0, "y": 1500},
-        {"action": "waitForTimeout", "timeout": 1500},
-        {"action": "scroll", "selector": {"type": "css", "value": "body"},
-         "x": 0, "y": 3000},
-        {"action": "waitForTimeout", "timeout": 1500},
-    ],
 }
 
 
@@ -116,7 +105,7 @@ class YelpSpider(scrapy.Spider):
                 callback=self.parse_restaurant,
                 errback=self.errback,
                 meta={
-                    "zyte_api": _ZYTE_BROWSER_WITH_SCROLL,
+                    "zyte_api": _ZYTE_BROWSER,
                     "restaurant_data": card,
                 },
             )
