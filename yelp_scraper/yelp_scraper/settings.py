@@ -81,14 +81,8 @@ ITEM_PIPELINES = {
 # Feed exports (one CSV per item type)
 # ---------------------------------------------------------------------------
 FEEDS = {
-    "output/restaurants.csv": {
+    "output/yelp_data.csv": {
         "format": "csv",
-        "item_classes": ["yelp_scraper.items.RestaurantItem"],
-        "overwrite": True,
-    },
-    "output/reviews.csv": {
-        "format": "csv",
-        "item_classes": ["yelp_scraper.items.ReviewItem"],
         "overwrite": True,
     },
 }

@@ -9,9 +9,9 @@ Rendering strategy
 ------------------
 All pages are fetched via the Zyte API with ``browserHtml: true``.  Zyte
 runs a real managed browser on its end, executes the page JavaScript, and
-returns fully-rendered HTML – the same approach confirmed working in the
-Zyte API playground.  This avoids the 503 / CAPTCHA issues that arise when
-routing a local Playwright browser through Zyte's raw proxy.
+returns fully-rendered HTML.  Restaurant detail pages additionally use Zyte
+API scroll actions so that the lazy-loaded review section is rendered before
+HTML is captured.
 
 Requires:
     scrapy-zyte-api  (pip install scrapy-zyte-api)
@@ -26,7 +26,7 @@ import re
 
 import scrapy
 
-from yelp_scraper.items import RestaurantItem, ReviewItem
+from yelp_scraper.items import ReviewItem
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -39,9 +39,23 @@ BASE_URL = (
 TOTAL_PAGES = 20
 RESULTS_PER_PAGE = 10  # Yelp shows 10 results per listing page
 
-# Zyte API request params shared by every request
+# Listing pages: simple browser render, no scroll needed
 _ZYTE_BROWSER = {
     "browserHtml": True,
+}
+
+# Restaurant detail pages: scroll to trigger lazy-loaded review section
+_ZYTE_BROWSER_WITH_SCROLL = {
+    "browserHtml": True,
+    "actions": [
+        {"action": "waitForTimeout", "timeout": 2000},
+        {"action": "scroll", "selector": {"type": "css", "value": "body"},
+         "x": 0, "y": 1500},
+        {"action": "waitForTimeout", "timeout": 1500},
+        {"action": "scroll", "selector": {"type": "css", "value": "body"},
+         "x": 0, "y": 3000},
+        {"action": "waitForTimeout", "timeout": 1500},
+    ],
 }
 
 
@@ -102,27 +116,19 @@ class YelpSpider(scrapy.Spider):
                 callback=self.parse_restaurant,
                 errback=self.errback,
                 meta={
-                    "zyte_api": _ZYTE_BROWSER,
+                    "zyte_api": _ZYTE_BROWSER_WITH_SCROLL,
                     "restaurant_data": card,
                 },
             )
 
     # ------------------------------------------------------------------
-    # Parse a restaurant detail page → yield RestaurantItem + ReviewItems
+    # Parse a restaurant detail page → yield ReviewItems
+    # RestaurantItem is no longer used; ReviewItem carries all fields.
+    # Restaurants with no scraped reviews get one sentinel row with blank
+    # reviewer_name / reviewer_rating / review_text.
     # ------------------------------------------------------------------
     def parse_restaurant(self, response):
         rd = response.meta["restaurant_data"]
-
-        # --- Yield the restaurant summary row -------------------------
-        item = RestaurantItem()
-        item["name"] = rd.get("name", "")
-        item["rating"] = rd.get("rating", "")
-        item["review_count"] = rd.get("review_count", "")
-        item["link"] = rd.get("link", "")
-        item["location"] = rd.get("location", "")
-        item["categories"] = rd.get("categories", "")
-        item["page_number"] = rd.get("page_number", "")
-        yield item
 
         # --- Try JSON-LD first (fastest, most structured) -------------
         json_ld_reviews = list(self._reviews_from_json_ld(response, rd))
@@ -131,7 +137,23 @@ class YelpSpider(scrapy.Spider):
             return
 
         # --- Fall back to HTML parsing --------------------------------
-        yield from self._reviews_from_html(response, rd)
+        html_reviews = list(self._reviews_from_html(response, rd))
+        if html_reviews:
+            yield from html_reviews
+            return
+
+        # --- Sentinel row: restaurant with no scraped reviews ---------
+        item = ReviewItem()
+        item["restaurant_name"]         = rd.get("name", "")
+        item["restaurant_rating"]       = rd.get("rating", "")
+        item["restaurant_review_count"] = rd.get("review_count", "")
+        item["restaurant_link"]         = rd.get("link", "")
+        item["restaurant_location"]     = rd.get("location", "")
+        item["restaurant_categories"]   = rd.get("categories", "")
+        item["reviewer_name"]           = ""
+        item["reviewer_rating"]         = ""
+        item["review_text"]             = ""
+        yield item
 
     # ==================================================================
     # Private helpers
@@ -145,10 +167,9 @@ class YelpSpider(scrapy.Spider):
         Extract restaurant summary dicts from a listing-page response.
 
         Strategy:
-          1. Find every <a href="/biz/..."> link that is a primary business
-             name link (has visible text, is not a utility link).
-          2. Walk up to the enclosing <li> to collect sibling data
-             (rating, review count, categories, location) from the same card.
+          1. Find every <a href="/biz/..."> that is a primary business name
+             link (has visible text, not a utility link).
+          2. Walk up to the enclosing <li> card to collect sibling data.
           3. De-duplicate by normalised URL.
         """
         cards = []
@@ -214,36 +235,56 @@ class YelpSpider(scrapy.Spider):
     # ------------------------------------------------------------------
 
     def _extract_rating(self, el) -> str:
-        rating_el = el.css("[aria-label*='star rating'], [aria-label*='star']")
-        if rating_el:
-            return _parse_rating(rating_el.attrib.get("aria-label", ""))
-        for candidate in el.css("[role='img']"):
+        # Lead with Yelp's exact "Rated X.X stars" phrasing to avoid
+        # matching unrelated star badge icons first
+        for candidate in el.css("[aria-label]"):
             aria = candidate.attrib.get("aria-label", "")
-            if "star" in aria.lower():
+            if re.search(r"rated\s+[\d.]+\s+star", aria, re.IGNORECASE):
+                return _parse_rating(aria)
+        # Wider fallback: any role=img or aria-label with digit + star
+        for candidate in el.css("[role='img'], [aria-label*='star']"):
+            aria = candidate.attrib.get("aria-label", "")
+            if re.search(r"[\d.]+\s*star", aria, re.IGNORECASE):
                 return _parse_rating(aria)
         return ""
 
     def _extract_review_count(self, el) -> str:
+        # Case 1: digit + "review" in the same text node
         for text in el.css("::text").getall():
             m = re.search(r"([\d,]+)\s*review", text, re.IGNORECASE)
             if m:
                 return m.group(1).replace(",", "")
+        # Case 2: Yelp sometimes splits the count and the word "reviews"
+        # across adjacent sibling text nodes
+        all_texts = [t.strip() for t in el.css("::text").getall() if t.strip()]
+        for i, text in enumerate(all_texts):
+            if re.fullmatch(r"[\d,]+", text):
+                neighbors = all_texts[max(0, i - 1):i] + all_texts[i + 1:i + 2]
+                if any("review" in n.lower() for n in neighbors):
+                    return text.replace(",", "")
         return ""
 
     def _extract_categories(self, el) -> str:
         cats = []
-        for a in el.css("a[href*='category']"):
+        # Yelp category links on search results use /search?find_desc=<Category>&find_loc=...
+        # NOT /category/ — that was the old incorrect selector
+        for a in el.css("a[href*='find_desc']"):
             text = a.css("::text").get("").strip()
             if text and text not in cats:
                 cats.append(text)
         if not cats:
-            for span in el.css("span[class*='tag'], button[class*='tag']"):
+            # Fallback: plain <span> elements with no child links
+            for span in el.css("span"):
+                if span.css("a"):
+                    continue
                 text = span.css("::text").get("").strip()
-                if text and text not in cats:
-                    cats.append(text)
+                if text and len(text) < 40 and text not in cats:
+                    if not re.fullmatch(r"[\d\s$.,·•\-]+", text):
+                        cats.append(text)
         return ", ".join(cats)
 
     def _extract_location(self, el) -> str:
+        # Priority 1: semantic class-based selectors
         for selector in [
             "[class*='secondaryAttributes'] ::text",
             "address ::text",
@@ -255,16 +296,20 @@ class YelpSpider(scrapy.Spider):
             if joined:
                 return joined
 
-        for text in el.css("::text").getall():
-            text = text.strip()
-            if not text or len(text) > 80:
+        # Priority 2: first <p> or <span> that contains NO /biz/ anchor.
+        # Name links are always inside <a href="/biz/...">, so any paragraph
+        # without a biz link is location/neighborhood text.
+        skip_labels = {
+            "open", "closed", "sponsored", "new", "hot",
+            "order online", "get directions", "see more",
+        }
+        for p in el.css("p, span"):
+            if p.css("a[href*='/biz/']"):   # skip name containers
                 continue
-            if re.match(r"^\d+\s+\w", text):
-                return text
-            if re.match(r"^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3}$", text):
-                skip = {"Open", "Closed", "Sponsored", "New", "Hot"}
-                if text not in skip:
-                    return text
+            joined = " ".join(p.css("::text").getall()).strip()
+            if joined and len(joined) <= 120 and joined.lower() not in skip_labels:
+                return joined
+
         return ""
 
     # ------------------------------------------------------------------
@@ -294,12 +339,12 @@ class YelpSpider(scrapy.Spider):
 
     def _build_review_item(self, rev_data: dict, rd: dict) -> ReviewItem:
         item = ReviewItem()
-        item["restaurant_name"] = rd.get("name", "")
-        item["restaurant_rating"] = rd.get("rating", "")
+        item["restaurant_name"]         = rd.get("name", "")
+        item["restaurant_rating"]       = rd.get("rating", "")
         item["restaurant_review_count"] = rd.get("review_count", "")
-        item["restaurant_link"] = rd.get("link", "")
-        item["restaurant_location"] = rd.get("location", "")
-        item["restaurant_categories"] = rd.get("categories", "")
+        item["restaurant_link"]         = rd.get("link", "")
+        item["restaurant_location"]     = rd.get("location", "")
+        item["restaurant_categories"]   = rd.get("categories", "")
 
         author = rev_data.get("author", {})
         item["reviewer_name"] = (
@@ -323,10 +368,14 @@ class YelpSpider(scrapy.Spider):
     # ------------------------------------------------------------------
     def _reviews_from_html(self, response, rd):
         """
-        Identify review containers by the co-presence of three signals:
-          • a link to /user_details  (reviewer profile)
-          • aria-label containing "star"  (rating)
+        Identify review containers by three co-present signals:
+          • a link to /user_details  (reviewer profile / avatar)
+          • an aria-label containing "star"  (rating)
           • a <p lang="...">  (review text)
+
+        Note: the reviewer name is NOT inside the <a href="/user_details">
+        element — that anchor wraps only the avatar image.  The name lives
+        in a sibling <span>, so we use XPath's following-sibling axis.
         """
         candidates = response.css(
             "li, section, article, [data-review-id], [id^='review_']"
@@ -335,24 +384,45 @@ class YelpSpider(scrapy.Spider):
         yielded = 0
         for container in candidates:
             user_links = container.css("a[href*='/user_details']")
-            star_els = container.css(
+            star_els   = container.css(
                 "[aria-label*='star rating'], [aria-label*='star']"
             )
-            text_els = container.css("p[lang], p[lang] span")
+            text_els   = container.css("p[lang], p[lang] span")
 
             if not (user_links and star_els and text_els):
                 continue
 
-            reviewer_name = user_links.css("::text").get("").strip()
+            # --- Reviewer name ---
+            # The name is in a sibling <span> of the avatar link, not inside it
+            reviewer_name = ""
+            user_link = user_links[0]
+            name_from_sibling = user_link.xpath(
+                "following-sibling::span[1]//text()"
+            ).get("").strip()
+            if name_from_sibling:
+                reviewer_name = name_from_sibling
+            else:
+                # Walk up to shared wrapper, grab first span without
+                # star/rating/date noise
+                wrapper = user_link.xpath("parent::*[1]")
+                for span in wrapper.css("span"):
+                    candidate = " ".join(span.css("::text").getall()).strip()
+                    if candidate and not re.search(
+                        r"star|rating|\d+/\d+|review|photo", candidate, re.IGNORECASE
+                    ):
+                        reviewer_name = candidate
+                        break
             if not reviewer_name:
                 reviewer_name = (
-                    user_links.attrib.get("aria-label", "").strip()
-                    or user_links.attrib.get("title", "").strip()
+                    user_link.attrib.get("aria-label", "").strip()
+                    or user_link.attrib.get("title", "").strip()
                 )
 
+            # --- Reviewer rating ---
             aria = star_els.attrib.get("aria-label", "")
             reviewer_rating = _parse_rating(aria)
 
+            # --- Review text ---
             texts = text_els.css("::text").getall()
             review_text = " ".join(t.strip() for t in texts if t.strip())
             if not review_text:
@@ -366,15 +436,15 @@ class YelpSpider(scrapy.Spider):
                 continue
 
             item = ReviewItem()
-            item["restaurant_name"] = rd.get("name", "")
-            item["restaurant_rating"] = rd.get("rating", "")
+            item["restaurant_name"]         = rd.get("name", "")
+            item["restaurant_rating"]       = rd.get("rating", "")
             item["restaurant_review_count"] = rd.get("review_count", "")
-            item["restaurant_link"] = rd.get("link", "")
-            item["restaurant_location"] = rd.get("location", "")
-            item["restaurant_categories"] = rd.get("categories", "")
-            item["reviewer_name"] = reviewer_name
-            item["reviewer_rating"] = reviewer_rating
-            item["review_text"] = review_text[:3000]
+            item["restaurant_link"]         = rd.get("link", "")
+            item["restaurant_location"]     = rd.get("location", "")
+            item["restaurant_categories"]   = rd.get("categories", "")
+            item["reviewer_name"]           = reviewer_name
+            item["reviewer_rating"]         = reviewer_rating
+            item["review_text"]             = review_text[:3000]
             yield item
             yielded += 1
 
