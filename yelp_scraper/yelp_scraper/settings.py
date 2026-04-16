@@ -43,19 +43,26 @@ SPIDER_MIDDLEWARES = {
     "scrapy_zyte_api.ScrapyZyteAPISpiderMiddleware": 100,
 }
 
+# Reuse the same Zyte-managed browser session (same IP + cookies) across
+# all requests to yelp.com.  This makes listing→detail navigation look like
+# a single real user rather than isolated requests, which significantly
+# reduces 520 website-ban errors on /biz/ pages.
+ZYTE_API_SESSION_ENABLED = True
+ZYTE_API_SESSION_PARAMS = {"browserHtml": True}
+
 # ---------------------------------------------------------------------------
 # Crawl politeness
 # ---------------------------------------------------------------------------
 ROBOTSTXT_OBEY = False
-CONCURRENT_REQUESTS = 2
+CONCURRENT_REQUESTS = 1
 CONCURRENT_REQUESTS_PER_DOMAIN = 1
-DOWNLOAD_DELAY = 2
+DOWNLOAD_DELAY = 3
 RANDOMIZE_DOWNLOAD_DELAY = True
 
 AUTOTHROTTLE_ENABLED = True
 AUTOTHROTTLE_START_DELAY = 1
 AUTOTHROTTLE_MAX_DELAY = 15
-AUTOTHROTTLE_TARGET_CONCURRENCY = 2.0
+AUTOTHROTTLE_TARGET_CONCURRENCY = 1.0
 
 # ---------------------------------------------------------------------------
 # Retry / error handling

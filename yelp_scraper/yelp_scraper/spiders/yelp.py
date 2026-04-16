@@ -550,17 +550,20 @@ class YelpSpider(scrapy.Spider):
         element — that anchor wraps only the avatar image.  The name lives
         in a sibling <span>, so we use XPath's following-sibling axis.
         """
+        # cssselect (Scrapy's CSS engine) does not support complex argument
+        # selectors inside :has(), so we use XPath for containment checks.
         candidates = response.css(
-            "[data-review-id], [id^='review_'], "
-            "li:has(a[href*='/user_details']), "
-            "li:has(a[href*='/users/']), "
-            "section, article"
+            "[data-review-id], [id^='review_'], section, article"
         )
-        # Also try any div that directly contains a user link (last resort)
         if not candidates:
-            candidates = response.css(
-                "div:has(> a[href*='/user_details']), "
-                "div:has(> a[href*='/users/'])"
+            candidates = response.xpath(
+                "//li[.//a[contains(@href,'/user_details')"
+                "       or contains(@href,'/users/')]]"
+            )
+        if not candidates:
+            candidates = response.xpath(
+                "//div[./a[contains(@href,'/user_details')"
+                "          or contains(@href,'/users/')]]"
             )
 
         yielded = 0
