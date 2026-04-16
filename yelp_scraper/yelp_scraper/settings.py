@@ -18,12 +18,24 @@ PLAYWRIGHT_DEFAULT_NAVIGATION_TIMEOUT = 30_000  # ms
 
 PLAYWRIGHT_LAUNCH_OPTIONS = {
     # headless true by default; set False for local debugging
-    "args": ["--disable-dev-shm-usage"],
+    "args": [
+        "--disable-dev-shm-usage",
+        "--no-sandbox",              # required in many Linux/server environments
+    ],
 }
 
-# Realistic browser context so Yelp does not immediately block the request
+# Route Playwright's Chromium through Zyte Smart Proxy so requests come from
+# residential/rotating IPs that Yelp does not block.
+# ignore_https_errors is required because the proxy performs SSL interception.
+ZYTE_API_KEY = "d5ade7ca66f54281b9788b32c08900c9"
 PLAYWRIGHT_CONTEXTS = {
     "default": {
+        "proxy": {
+            "server": "http://proxy.zyte.com:8011",
+            "username": "d5ade7ca66f54281b9788b32c08900c9",
+            "password": "",
+        },
+        "ignore_https_errors": True,
         "user_agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
