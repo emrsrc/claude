@@ -7,14 +7,19 @@ reviews.
 
 Rendering strategy
 ------------------
-All pages are fetched via scrapy-playwright with a local Chromium browser.
-The browser executes page JavaScript and waits for DOM content to load before
-Scrapy receives the response.  All CSS/XPath parsing runs on the fully-rendered
-HTML.
+Local Playwright (headless Chromium) is blocked by Yelp's DataDome bot
+protection on every request regardless of user-agent or proxy IP — the
+browser fingerprint itself triggers a 403/CAPTCHA response.
+
+The active solution uses the Zyte Data Extraction API with browserHtml=True.
+Zyte runs a managed Playwright-based browser on its own whitelisted
+infrastructure and returns fully-rendered HTML.  All CSS/XPath selectors are
+identical to what a local Playwright setup would use; only the download
+handler and request meta differ.
 
 Requires:
-    scrapy-playwright  (pip install scrapy-playwright)
-    playwright install chromium
+    scrapy-zyte-api  (pip install scrapy-zyte-api)
+    ZYTE_API_KEY     set in settings.py or via env var
 
 Run:
     scrapy crawl yelp
@@ -38,12 +43,10 @@ BASE_URL = (
 TOTAL_PAGES = 20
 RESULTS_PER_PAGE = 10  # Yelp shows 10 results per listing page
 
-# Playwright meta added to every request so scrapy-playwright renders the page.
-# wait_until="domcontentloaded" is faster than "networkidle" and sufficient
-# because Yelp's review data is embedded in the initial server-rendered HTML.
-_PLAYWRIGHT_META = {
-    "playwright": True,
-    "playwright_page_goto_kwargs": {"wait_until": "domcontentloaded"},
+# Zyte API browser rendering — equivalent to Playwright but runs on Zyte's
+# managed infrastructure so Yelp's bot-detection does not block it.
+_ZYTE_BROWSER = {
+    "browserHtml": True,
 }
 
 
@@ -95,7 +98,7 @@ class YelpSpider(scrapy.Spider):
                 callback=self.parse_listing,
                 errback=self.errback,
                 meta={
-                    **_PLAYWRIGHT_META,
+                    "zyte_api": _ZYTE_BROWSER,
                     "page_number": page + 1,
                 },
             )
@@ -125,7 +128,7 @@ class YelpSpider(scrapy.Spider):
                 callback=self.parse_restaurant,
                 errback=self.errback,
                 meta={
-                    **_PLAYWRIGHT_META,
+                    "zyte_api": _ZYTE_BROWSER,
                     "restaurant_data": card,
                 },
             )

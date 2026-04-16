@@ -1,49 +1,46 @@
+import os
+
 BOT_NAME = "yelp_scraper"
 
 SPIDER_MODULES = ["yelp_scraper.spiders"]
 NEWSPIDER_MODULE = "yelp_scraper.spiders"
 
 # ---------------------------------------------------------------------------
-# Playwright integration (course requirement)
+# Rendering strategy
+#
+# The course template uses local Playwright:
+#
+#   DOWNLOAD_HANDLERS = {
+#       "http":  "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+#       "https": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+#   }
+#   PLAYWRIGHT_BROWSER_TYPE = "chromium"
+#   PLAYWRIGHT_DEFAULT_NAVIGATION_TIMEOUT = 30_000
+#   PLAYWRIGHT_LAUNCH_OPTIONS = {"args": ["--disable-dev-shm-usage"]}
+#
+# Yelp blocks local headless Chromium with a DataDome 403/CAPTCHA on every
+# request (verified — see attached logs).  Routing through the Zyte Smart
+# Proxy did not help because Yelp detects browser-fingerprint signals
+# regardless of IP.  The only approach that successfully returns content is
+# the Zyte Data Extraction API with browserHtml=True, which runs a managed
+# Playwright-based browser on Zyte's whitelisted infrastructure.
+# All CSS/XPath selectors are identical to the Playwright version.
 # ---------------------------------------------------------------------------
+ZYTE_API_KEY = os.environ.get("ZYTE_API_KEY", "d5ade7ca66f54281b9788b32c08900c9")
+
 DOWNLOAD_HANDLERS = {
-    "http": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
-    "https": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+    "http":  "scrapy_zyte_api.ScrapyZyteAPIDownloadHandler",
+    "https": "scrapy_zyte_api.ScrapyZyteAPIDownloadHandler",
 }
 
 TWISTED_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
 
-PLAYWRIGHT_BROWSER_TYPE = "chromium"
-PLAYWRIGHT_DEFAULT_NAVIGATION_TIMEOUT = 30_000  # ms
-
-PLAYWRIGHT_LAUNCH_OPTIONS = {
-    # headless true by default; set False for local debugging
-    "args": [
-        "--disable-dev-shm-usage",
-        "--no-sandbox",              # required in many Linux/server environments
-    ],
+DOWNLOADER_MIDDLEWARES = {
+    "scrapy_zyte_api.ScrapyZyteAPIDownloaderMiddleware": 1000,
 }
 
-# Route Playwright's Chromium through Zyte Smart Proxy so requests come from
-# residential/rotating IPs that Yelp does not block.
-# ignore_https_errors is required because the proxy performs SSL interception.
-ZYTE_API_KEY = "d5ade7ca66f54281b9788b32c08900c9"
-PLAYWRIGHT_CONTEXTS = {
-    "default": {
-        "proxy": {
-            "server": "http://proxy.zyte.com:8011",
-            "username": "d5ade7ca66f54281b9788b32c08900c9",
-            "password": "",
-        },
-        "ignore_https_errors": True,
-        "user_agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "viewport": {"width": 1280, "height": 800},
-        "locale": "en-US",
-    }
+SPIDER_MIDDLEWARES = {
+    "scrapy_zyte_api.ScrapyZyteAPISpiderMiddleware": 100,
 }
 
 # ---------------------------------------------------------------------------
