@@ -7,15 +7,14 @@ reviews.
 
 Rendering strategy
 ------------------
-All pages are fetched via the Zyte API with ``browserHtml: true``.  Zyte
-runs a real managed browser on its end, executes the page JavaScript, and
-returns fully-rendered HTML.  Scroll actions were removed from detail page
-requests after they caused 520 website-ban errors — Yelp detects the longer
-browser session as automated activity.
+All pages are fetched via scrapy-playwright with a local Chromium browser.
+The browser executes page JavaScript and waits for DOM content to load before
+Scrapy receives the response.  All CSS/XPath parsing runs on the fully-rendered
+HTML.
 
 Requires:
-    scrapy-zyte-api  (pip install scrapy-zyte-api)
-    ZYTE_API_KEY     set in settings.py or via env var
+    scrapy-playwright  (pip install scrapy-playwright)
+    playwright install chromium
 
 Run:
     scrapy crawl yelp
@@ -39,12 +38,12 @@ BASE_URL = (
 TOTAL_PAGES = 20
 RESULTS_PER_PAGE = 10  # Yelp shows 10 results per listing page
 
-# All pages use the same simple browser render.
-# Scroll actions were removed from detail page requests — they triggered
-# Zyte 520 "website-ban" errors because the extended browser session made
-# the request detectable as automated.
-_ZYTE_BROWSER = {
-    "browserHtml": True,
+# Playwright meta added to every request so scrapy-playwright renders the page.
+# wait_until="domcontentloaded" is faster than "networkidle" and sufficient
+# because Yelp's review data is embedded in the initial server-rendered HTML.
+_PLAYWRIGHT_META = {
+    "playwright": True,
+    "playwright_page_goto_kwargs": {"wait_until": "domcontentloaded"},
 }
 
 
@@ -96,7 +95,7 @@ class YelpSpider(scrapy.Spider):
                 callback=self.parse_listing,
                 errback=self.errback,
                 meta={
-                    "zyte_api": _ZYTE_BROWSER,
+                    **_PLAYWRIGHT_META,
                     "page_number": page + 1,
                 },
             )
@@ -126,7 +125,7 @@ class YelpSpider(scrapy.Spider):
                 callback=self.parse_restaurant,
                 errback=self.errback,
                 meta={
-                    "zyte_api": _ZYTE_BROWSER,
+                    **_PLAYWRIGHT_META,
                     "restaurant_data": card,
                 },
             )

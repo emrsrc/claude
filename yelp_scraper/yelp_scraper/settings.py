@@ -1,55 +1,41 @@
-import os
-
 BOT_NAME = "yelp_scraper"
 
 SPIDER_MODULES = ["yelp_scraper.spiders"]
 NEWSPIDER_MODULE = "yelp_scraper.spiders"
 
 # ---------------------------------------------------------------------------
-# Zyte API – browser-rendered HTML (replaces local Playwright + raw proxy)
-# Override at run-time:  export ZYTE_API_KEY=<your-key>
-# ---------------------------------------------------------------------------
-ZYTE_API_KEY = os.environ.get("ZYTE_API_KEY", "d5ade7ca66f54281b9788b32c08900c9")
-
-# ---------------------------------------------------------------------------
-# Download handlers
-#
-# Course baseline – standard Playwright (local Chromium, no proxy):
-#
-#   DOWNLOAD_HANDLERS = {
-#       "http": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
-#       "https": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
-#   }
-#   PLAYWRIGHT_BROWSER_TYPE = "chromium"
-#   PLAYWRIGHT_LAUNCH_OPTIONS = {"headless": True}
-#
-# Active configuration – Zyte API browser rendering:
-# Yelp returns 503 when a local Playwright browser is routed through a raw
-# proxy.  Zyte API's browserHtml option runs a managed browser on Zyte's
-# infrastructure and returns fully-rendered HTML, which Yelp allows.
-# The spider meta uses  "zyte_api": {"browserHtml": True}  instead of the
-# Playwright equivalents; all CSS/XPath parsing is otherwise identical.
+# Playwright integration (course requirement)
 # ---------------------------------------------------------------------------
 DOWNLOAD_HANDLERS = {
-    "http": "scrapy_zyte_api.ScrapyZyteAPIDownloadHandler",
-    "https": "scrapy_zyte_api.ScrapyZyteAPIDownloadHandler",
+    "http": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+    "https": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
 }
 
-# Both Playwright and Zyte API require the asyncio reactor
 TWISTED_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
 
-DOWNLOADER_MIDDLEWARES = {
-    "scrapy_zyte_api.ScrapyZyteAPIDownloaderMiddleware": 1000,
+PLAYWRIGHT_BROWSER_TYPE = "chromium"
+PLAYWRIGHT_DEFAULT_NAVIGATION_TIMEOUT = 30_000  # ms
+
+PLAYWRIGHT_LAUNCH_OPTIONS = {
+    # headless true by default; set False for local debugging
+    "args": ["--disable-dev-shm-usage"],
 }
 
-SPIDER_MIDDLEWARES = {
-    "scrapy_zyte_api.ScrapyZyteAPISpiderMiddleware": 100,
+# Realistic browser context so Yelp does not immediately block the request
+PLAYWRIGHT_CONTEXTS = {
+    "default": {
+        "user_agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "viewport": {"width": 1280, "height": 800},
+        "locale": "en-US",
+    }
 }
 
 # ---------------------------------------------------------------------------
 # Crawl politeness
-# (Zyte API manages its own concurrency on their end, but we still throttle
-#  to avoid burning through quota too fast)
 # ---------------------------------------------------------------------------
 ROBOTSTXT_OBEY = False
 CONCURRENT_REQUESTS = 2
@@ -78,7 +64,7 @@ ITEM_PIPELINES = {
 }
 
 # ---------------------------------------------------------------------------
-# Feed exports (one CSV per item type)
+# Feed exports
 # ---------------------------------------------------------------------------
 FEEDS = {
     "output/yelp_data.csv": {
