@@ -6,25 +6,21 @@ SPIDER_MODULES = ["yelp_scraper.spiders"]
 NEWSPIDER_MODULE = "yelp_scraper.spiders"
 
 # ---------------------------------------------------------------------------
-# Rendering strategy
+# Download handlers
 #
-# The course template uses local Playwright:
+# Course baseline – standard Playwright (local Chromium, no proxy):
 #
 #   DOWNLOAD_HANDLERS = {
-#       "http":  "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+#       "http": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
 #       "https": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
 #   }
 #   PLAYWRIGHT_BROWSER_TYPE = "chromium"
-#   PLAYWRIGHT_DEFAULT_NAVIGATION_TIMEOUT = 30_000
-#   PLAYWRIGHT_LAUNCH_OPTIONS = {"args": ["--disable-dev-shm-usage"]}
+#   PLAYWRIGHT_LAUNCH_OPTIONS = {"headless": True}
 #
-# Yelp blocks local headless Chromium with a DataDome 403/CAPTCHA on every
-# request (verified — see attached logs).  Routing through the Zyte Smart
-# Proxy did not help because Yelp detects browser-fingerprint signals
-# regardless of IP.  The only approach that successfully returns content is
-# the Zyte Data Extraction API with browserHtml=True, which runs a managed
-# Playwright-based browser on Zyte's whitelisted infrastructure.
-# All CSS/XPath selectors are identical to the Playwright version.
+# Active configuration – Zyte API browser rendering:
+# Yelp returns 503 when a local Playwright browser is routed through a raw
+# proxy.  Zyte API's browserHtml option runs a managed browser on Zyte's
+# infrastructure and returns fully-rendered HTML, which Yelp allows.
 # ---------------------------------------------------------------------------
 ZYTE_API_KEY = os.environ.get("ZYTE_API_KEY", "d5ade7ca66f54281b9788b32c08900c9")
 
