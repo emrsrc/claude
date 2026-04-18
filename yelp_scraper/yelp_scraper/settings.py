@@ -33,7 +33,9 @@ ZYTE_API_KEY = os.environ.get(
     "ZYTE_API_KEY", "d5ade7ca66f54281b9788b32c08900c9"
 )
 ZYTE_SMARTPROXY_APIKEY = ZYTE_API_KEY
-ZYTE_SMARTPROXY_URL = "http://proxy.zyte.com:8011"
+# Zyte API proxy endpoint — same API key as scrapy-zyte-api supports this.
+# (proxy.zyte.com:8011 is Smart Proxy Manager, a separate subscription.)
+ZYTE_SMARTPROXY_URL = "http://api.zyte.com:8011"
 
 # --- Scrapy-Playwright download handlers -----------------------------------
 DOWNLOAD_HANDLERS = {
@@ -53,11 +55,11 @@ PLAYWRIGHT_LAUNCH_OPTIONS = {
         "--disable-dev-shm-usage",
         "--disable-blink-features=AutomationControlled",
     ],
-    # Route every page-load through Zyte Smart Proxy.  The proxy terminates
-    # TLS, rotates IPs, and replays the request from a clean residential IP
-    # which dramatically reduces DataDome 403/CAPTCHA responses.
+    # Route every page-load through Zyte API (proxy mode).  Zyte rotates IPs
+    # and serves requests from residential infrastructure which reduces
+    # DataDome 403/CAPTCHA responses.
     "proxy": {
-        "server":   ZYTE_SMARTPROXY_URL,
+        "server":   "http://api.zyte.com:8011",
         "username": ZYTE_API_KEY,
         "password": "",
     },

@@ -54,25 +54,24 @@ RESULTS_PER_PAGE = 10  # Yelp shows 10 results per listing page
 # waits for JSON-LD and scrolls the page to load lazy reviews.
 LISTING_PAGE_METHODS = [
     PageMethod("wait_for_load_state", "domcontentloaded"),
-    PageMethod("wait_for_selector", "h3", timeout=20_000),
+    # Fixed wait — no hard selector check so a CAPTCHA page doesn't kill the
+    # request.  The spider's _extract_cards() logs a warning when no cards
+    # are found, which surfaces blocked pages in the log.
+    PageMethod("wait_for_timeout", 3000),
     PageMethod("evaluate", "window.scrollTo(0, document.body.scrollHeight)"),
-    PageMethod("wait_for_timeout", 1500),
+    PageMethod("wait_for_timeout", 2000),
 ]
 
 DETAIL_PAGE_METHODS = [
     PageMethod("wait_for_load_state", "domcontentloaded"),
-    PageMethod(
-        "wait_for_selector",
-        'script[type="application/ld+json"]',
-        timeout=20_000,
-    ),
-    # Scroll down progressively — Yelp lazy-loads the review section
+    # Scroll progressively to trigger lazy-loaded reviews
+    PageMethod("wait_for_timeout", 2000),
     PageMethod("evaluate", "window.scrollTo(0, 800)"),
-    PageMethod("wait_for_timeout", 800),
+    PageMethod("wait_for_timeout", 1000),
     PageMethod("evaluate", "window.scrollTo(0, 1600)"),
-    PageMethod("wait_for_timeout", 800),
+    PageMethod("wait_for_timeout", 1000),
     PageMethod("evaluate", "window.scrollTo(0, document.body.scrollHeight)"),
-    PageMethod("wait_for_timeout", 1500),
+    PageMethod("wait_for_timeout", 2000),
 ]
 
 
@@ -153,6 +152,12 @@ class YelpSpider(scrapy.Spider):
                 f"Page {page_number}: no cards found – possible CAPTCHA or "
                 f"layout change. URL: {response.url}"
             )
+            if self._debug and page_number == 1:
+                import os
+                os.makedirs("output", exist_ok=True)
+                with open("output/debug_listing_p1.html", "w", encoding="utf-8") as fh:
+                    fh.write(response.text)
+                self.logger.info("[DEBUG] Saved listing HTML → output/debug_listing_p1.html")
 
         for card in cards:
             if not card.get("name") or not card.get("link"):
