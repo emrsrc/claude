@@ -6,6 +6,12 @@ SPIDER_MODULES = ["yelp_scraper.spiders"]
 NEWSPIDER_MODULE = "yelp_scraper.spiders"
 
 # ---------------------------------------------------------------------------
+# Zyte API – browser-rendered HTML (replaces local Playwright + raw proxy)
+# Override at run-time:  export ZYTE_API_KEY=<your-key>
+# ---------------------------------------------------------------------------
+ZYTE_API_KEY = os.environ.get("ZYTE_API_KEY", "d5ade7ca66f54281b9788b32c08900c9")
+
+# ---------------------------------------------------------------------------
 # Download handlers
 #
 # Course baseline – standard Playwright (local Chromium, no proxy):
@@ -21,14 +27,15 @@ NEWSPIDER_MODULE = "yelp_scraper.spiders"
 # Yelp returns 503 when a local Playwright browser is routed through a raw
 # proxy.  Zyte API's browserHtml option runs a managed browser on Zyte's
 # infrastructure and returns fully-rendered HTML, which Yelp allows.
+# The spider meta uses  "zyte_api": {"browserHtml": True}  instead of the
+# Playwright equivalents; all CSS/XPath parsing is otherwise identical.
 # ---------------------------------------------------------------------------
-ZYTE_API_KEY = os.environ.get("ZYTE_API_KEY", "d5ade7ca66f54281b9788b32c08900c9")
-
 DOWNLOAD_HANDLERS = {
-    "http":  "scrapy_zyte_api.ScrapyZyteAPIDownloadHandler",
+    "http": "scrapy_zyte_api.ScrapyZyteAPIDownloadHandler",
     "https": "scrapy_zyte_api.ScrapyZyteAPIDownloadHandler",
 }
 
+# Both Playwright and Zyte API require the asyncio reactor
 TWISTED_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
 
 DOWNLOADER_MIDDLEWARES = {
@@ -39,26 +46,21 @@ SPIDER_MIDDLEWARES = {
     "scrapy_zyte_api.ScrapyZyteAPISpiderMiddleware": 100,
 }
 
-# Reuse the same Zyte-managed browser session (same IP + cookies) across
-# all requests to yelp.com.  This makes listing→detail navigation look like
-# a single real user rather than isolated requests, which significantly
-# reduces 520 website-ban errors on /biz/ pages.
-ZYTE_API_SESSION_ENABLED = True
-ZYTE_API_SESSION_PARAMS = {"browserHtml": True}
-
 # ---------------------------------------------------------------------------
 # Crawl politeness
+# (Zyte API manages its own concurrency on their end, but we still throttle
+#  to avoid burning through quota too fast)
 # ---------------------------------------------------------------------------
 ROBOTSTXT_OBEY = False
-CONCURRENT_REQUESTS = 1
-CONCURRENT_REQUESTS_PER_DOMAIN = 1
-DOWNLOAD_DELAY = 3
+CONCURRENT_REQUESTS = 4
+CONCURRENT_REQUESTS_PER_DOMAIN = 4
+DOWNLOAD_DELAY = 1
 RANDOMIZE_DOWNLOAD_DELAY = True
 
 AUTOTHROTTLE_ENABLED = True
 AUTOTHROTTLE_START_DELAY = 1
 AUTOTHROTTLE_MAX_DELAY = 15
-AUTOTHROTTLE_TARGET_CONCURRENCY = 1.0
+AUTOTHROTTLE_TARGET_CONCURRENCY = 2.0
 
 # ---------------------------------------------------------------------------
 # Retry / error handling
@@ -76,11 +78,17 @@ ITEM_PIPELINES = {
 }
 
 # ---------------------------------------------------------------------------
-# Feed exports
+# Feed exports (one CSV per item type)
 # ---------------------------------------------------------------------------
 FEEDS = {
-    "output/yelp_data.csv": {
+    "output/restaurants.csv": {
         "format": "csv",
+        "item_classes": ["yelp_scraper.items.RestaurantItem"],
+        "overwrite": True,
+    },
+    "output/reviews.csv": {
+        "format": "csv",
+        "item_classes": ["yelp_scraper.items.ReviewItem"],
         "overwrite": True,
     },
 }
