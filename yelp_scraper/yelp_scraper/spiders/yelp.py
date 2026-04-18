@@ -7,19 +7,23 @@ reviews.
 
 Rendering strategy
 ------------------
-Local Playwright (headless Chromium) is blocked by Yelp's DataDome bot
-protection on every request regardless of user-agent or proxy IP — the
-browser fingerprint itself triggers a 403/CAPTCHA response.
+Requests are driven by scrapy-playwright (local headless Chromium) as
+required by the course.  The Playwright browser is launched with Zyte
+Smart Proxy configured at the browser-launch level (see settings.py), so
+every page-load is tunnelled through Zyte's rotating residential IPs.
+This combines course-compliant Playwright usage with Zyte's anti-ban
+infrastructure.
 
-The active solution uses the Zyte Data Extraction API with browserHtml=True.
-Zyte runs a managed Playwright-based browser on its own whitelisted
-infrastructure and returns fully-rendered HTML.  All CSS/XPath selectors are
-identical to what a local Playwright setup would use; only the download
-handler and request meta differ.
+Each request:
+  1. Navigates to the URL via Chromium through the Zyte proxy
+  2. Waits for key selectors (h3 on listings, script tags on /biz/ pages)
+  3. Scrolls the page to trigger any lazy-loaded content (reviews, cards)
+  4. Returns the fully-rendered HTML to Scrapy for parsing
 
 Requires:
-    scrapy-zyte-api  (pip install scrapy-zyte-api)
+    scrapy-playwright, playwright, scrapy-zyte-smartproxy  (see requirements.txt)
     ZYTE_API_KEY     set in settings.py or via env var
+    playwright install chromium   (one-time, after pip install)
 
 Run:
     scrapy crawl yelp
@@ -29,6 +33,7 @@ import json
 import re
 
 import scrapy
+from scrapy_playwright.page import PageMethod
 
 from yelp_scraper.items import ReviewItem
 
@@ -43,11 +48,41 @@ BASE_URL = (
 TOTAL_PAGES = 20
 RESULTS_PER_PAGE = 10  # Yelp shows 10 results per listing page
 
-# Zyte API browser rendering — equivalent to Playwright but runs on Zyte's
-# managed infrastructure so Yelp's bot-detection does not block it.
-_ZYTE_BROWSER = {
-    "browserHtml": True,
-}
+# Playwright page-interaction recipes.  PageMethod objects are executed in
+# order inside the Playwright page before the HTML is returned to Scrapy.
+# The listing recipe waits for a heading to be present; the detail recipe
+# waits for JSON-LD and scrolls the page to load lazy reviews.
+LISTING_PAGE_METHODS = [
+    PageMethod("wait_for_load_state", "domcontentloaded"),
+    PageMethod("wait_for_selector", "h3", timeout=20_000),
+    PageMethod("evaluate", "window.scrollTo(0, document.body.scrollHeight)"),
+    PageMethod("wait_for_timeout", 1500),
+]
+
+DETAIL_PAGE_METHODS = [
+    PageMethod("wait_for_load_state", "domcontentloaded"),
+    PageMethod(
+        "wait_for_selector",
+        'script[type="application/ld+json"]',
+        timeout=20_000,
+    ),
+    # Scroll down progressively — Yelp lazy-loads the review section
+    PageMethod("evaluate", "window.scrollTo(0, 800)"),
+    PageMethod("wait_for_timeout", 800),
+    PageMethod("evaluate", "window.scrollTo(0, 1600)"),
+    PageMethod("wait_for_timeout", 800),
+    PageMethod("evaluate", "window.scrollTo(0, document.body.scrollHeight)"),
+    PageMethod("wait_for_timeout", 1500),
+]
+
+
+def _playwright_meta(page_methods):
+    """Build the meta dict that switches a request to scrapy-playwright."""
+    return {
+        "playwright": True,
+        "playwright_include_page": False,
+        "playwright_page_methods": page_methods,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -93,14 +128,13 @@ class YelpSpider(scrapy.Spider):
         for page in range(TOTAL_PAGES):
             offset = page * RESULTS_PER_PAGE
             url = f"{BASE_URL}&start={offset}"
+            meta = _playwright_meta(LISTING_PAGE_METHODS)
+            meta["page_number"] = page + 1
             yield scrapy.Request(
                 url=url,
                 callback=self.parse_listing,
                 errback=self.errback,
-                meta={
-                    "zyte_api": _ZYTE_BROWSER,
-                    "page_number": page + 1,
-                },
+                meta=meta,
             )
 
     # ------------------------------------------------------------------
@@ -123,14 +157,13 @@ class YelpSpider(scrapy.Spider):
         for card in cards:
             if not card.get("name") or not card.get("link"):
                 continue
+            meta = _playwright_meta(DETAIL_PAGE_METHODS)
+            meta["restaurant_data"] = card
             yield scrapy.Request(
                 url=card["link"],
                 callback=self.parse_restaurant,
                 errback=self.errback,
-                meta={
-                    "zyte_api": _ZYTE_BROWSER,
-                    "restaurant_data": card,
-                },
+                meta=meta,
             )
 
     # ------------------------------------------------------------------
